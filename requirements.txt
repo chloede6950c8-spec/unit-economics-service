@@ -1,3 +1,3 @@
+openai
 pdfplumber
-sqlalchemy
-openai  # для ИИ-классификации
+sqlite3
