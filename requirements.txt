@@ -1,3 +1,5 @@
 openai
 pdfplumber
-sqlite3
+requests
+pandas
+openpyxl
