@@ -1,186 +1,166 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 import pdfplumber
 import requests
 from io import BytesIO
 from openai import OpenAI
 
-# --- КОНФИГУРАЦИЯ СТРАНИЦЫ ---
-st.set_page_config(page_title="M.Video Unit Economics AI", layout="wide", page_icon="📊")
+# --- КОНФИГУРАЦИЯ ---
+st.set_page_config(page_title="B2B Unit Economics System", layout="wide", page_icon="📦")
 
-# Ссылка на актуальные комиссии (твоя ссылка)
+# Константы
 DEFAULT_PDF_URL = "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/marketplace/applications/applications-1new.pdf"
 
-# --- ИНИЦИАЛИЗАЦИЯ ИИ (БЕЗОПАСНО) ---
-# Проверяем наличие ключа в Secrets Streamlit или вводим вручную
+# --- ИНИЦИАЛИЗАЦИЯ БД (ПАМЯТЬ ТОВАРОВ) ---
+def init_db():
+    conn = sqlite3.connect('products_storage.db', check_same_thread=False)
+    cursor = conn.cursor()
+    # Таблица товаров: храним паспортные данные
+    cursor.execute('''CREATE TABLE IF NOT EXISTS products 
+                      (sku TEXT PRIMARY KEY, name TEXT, length REAL, height REAL, width REAL, weight REAL)''')
+    # Таблица кэша категорий ИИ
+    cursor.execute('''CREATE TABLE IF NOT EXISTS category_cache 
+                      (name TEXT PRIMARY KEY, category TEXT)''')
+    conn.commit()
+    return conn
+
+conn = init_db()
+
+# --- ИНИЦИАЛИЗАЦИЯ ИИ ---
 if "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
 else:
-    api_key = st.sidebar.text_input("🔑 Введите OpenAI API Key", type="password", help="Получите ключ на platform.openai.com")
+    api_key = st.sidebar.text_input("🔑 OpenAI API Key", type="password")
 
 client = OpenAI(api_key=api_key) if api_key else None
 
-# --- ФУНКЦИИ ЛОГИКИ ---
+# --- ФУНКЦИИ ОБРАБОТКИ ---
 
-def extract_commissions_from_pdf(file_source):
-    """Извлекает категории и проценты комиссий из PDF файла"""
-    commissions = {}
+def normalize_value(val, unit_type):
+    """Исправление единиц измерения: мм -> см, г -> кг"""
     try:
-        with pdfplumber.open(file_source) as pdf:
+        val = float(str(val).replace(',', '.'))
+        if unit_type == 'dim' and val > 250: return val / 10  # Похоже на мм
+        if unit_type == 'weight' and val > 150: return val / 1000  # Похоже на граммы
+        return val
+    except: return 0.0
+
+def get_ai_category(product_name, categories):
+    """ИИ классификация с проверкой кэша"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT category FROM category_cache WHERE name=?", (product_name,))
+    cached = cursor.fetchone()
+    if cached: return cached[0]
+
+    if not client: return "Прочее"
+    
+    try:
+        prompt = f"Товар: '{product_name}'. Выбери ОДНУ категорию из списка: {', '.join(categories)}. Ответь только названием."
+        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], temperature=0)
+        category = resp.choices[0].message.content.strip()
+        cursor.execute("INSERT OR REPLACE INTO category_cache VALUES (?, ?)", (product_name, category))
+        conn.commit()
+        return category
+    except: return "Прочее"
+
+def parse_pdf(url):
+    """Парсинг комиссий из PDF"""
+    data = {}
+    try:
+        resp = requests.get(url)
+        with pdfplumber.open(BytesIO(resp.content)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
-                        # Очищаем строку от пустых ячеек и переносов строк
-                        clean_row = [str(c).replace('\n', ' ').strip() for c in row if c]
-                        
-                        # Ищем ячейку, где есть знак %
-                        for i, cell in enumerate(clean_row):
+                        clean = [str(c).replace('\n', ' ').strip() for c in row if c]
+                        for cell in clean:
                             if "%" in cell:
                                 try:
-                                    # Название категории обычно в первой колонке (индекс 0)
-                                    cat_name = clean_row[0]
-                                    # Вытаскиваем число из ячейки с %
-                                    rate_str = cell.replace('%', '').replace(',', '.').strip()
-                                    rate = float(rate_str)
-                                    commissions[cat_name] = rate
-                                except:
-                                    continue
-        return commissions
-    except Exception as e:
-        st.error(f"Ошибка при чтении PDF: {e}")
-        return None
-
-def get_best_category_ai(product_name, available_categories):
-    """Использует ИИ для сопоставления товара с категорией из справочника"""
-    if not client:
-        return None
-    
-    prompt = f"""
-    Твоя задача: сопоставить товар с наиболее подходящей категорией из списка ритейлера М.Видео.
-    Товар: "{product_name}"
-    
-    Доступные категории:
-    {", ".join(available_categories)}
-    
-    Ответь ТОЛЬКО названием категории из списка. Если ничего не подходит, выбери 'Прочее' или наиболее близкую.
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return None
+                                    cat = clean[0]
+                                    rate = float(cell.replace('%', '').replace(',', '.').strip())
+                                    data[cat] = rate
+                                except: continue
+        return data
+    except: return None
 
 # --- ИНТЕРФЕЙС ---
+st.title("🚀 Универсальный сервис юнит-экономики")
 
-st.title("📊 Сервис Юнит-Экономики (М.Видео + AI)")
-st.markdown("Сервис автоматически подтягивает комиссии с сайта М.Видео и рассчитывает РРЦ с помощью ИИ.")
-
-# Блок синхронизации данных
 with st.sidebar:
-    st.header("⚙️ Настройки данных")
-    sync_url = st.text_input("Ссылка на PDF с комиссиями", value=DEFAULT_PDF_URL)
+    st.header("🛒 Настройка Ритейлера")
+    retailer = st.selectbox("Выберите покупателя", ["М.Видео", "DNS (в разработке)", "Ситилинк (в разработке)"])
+    if st.button("🔄 Обновить комиссии из PDF"):
+        res = parse_pdf(DEFAULT_PDF_URL)
+        if res:
+            st.session_state['commissions'] = res
+            st.success(f"Загружено {len(res)} категорий")
+
+st.header("1. Загрузка базы данных товаров")
+up_file = st.file_uploader("Загрузите Excel (артикул, наименование, себестоимость, длина, высота, ширина, вес)", type=["xlsx"])
+
+if up_file:
+    df_raw = pd.read_excel(up_file)
+    # Приведение колонок к нижнему регистру для поиска
+    df_raw.columns = [c.lower().strip() for c in df_raw.columns]
     
-    if st.button("🔄 Обновить комиссии с сайта"):
-        with st.spinner("Загрузка PDF..."):
-            try:
-                resp = requests.get(sync_url)
-                if resp.status_code == 200:
-                    pdf_data = extract_commissions_from_pdf(BytesIO(resp.content))
-                    if pdf_data:
-                        st.session_state['comm_dict'] = pdf_data
-                        st.success(f"Загружено {len(pdf_data)} категорий!")
-                else:
-                    st.error("Не удалось скачать файл по ссылке.")
-            except Exception as e:
-                st.error(f"Ошибка: {e}")
+    if st.button("📥 Сохранить/Обновить товары в базе"):
+        cursor = conn.cursor()
+        for _, r in df_raw.iterrows():
+            l = normalize_value(r.get('длина', 0), 'dim')
+            h = normalize_value(r.get('высота', 0), 'dim')
+            w = normalize_value(r.get('ширина', 0), 'dim')
+            wg = normalize_value(r.get('вес', 0), 'weight')
+            cursor.execute("INSERT OR REPLACE INTO products VALUES (?, ?, ?, ?, ?, ?)",
+                           (str(r.get('артикул')), str(r.get('наименование')), l, h, w, wg))
+        conn.commit()
+        st.success("База данных обновлена!")
 
-# Основная рабочая область
-if 'comm_dict' not in st.session_state:
-    st.info("👈 Нажмите кнопку 'Обновить комиссии с сайта' в боковом меню, чтобы начать.")
-else:
-    # Настройки параметров
-    st.header("1. Параметры сделки")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        retro = st.number_input("Ретро-бонус, %", value=5.0)
-    with col2:
-        marketing = st.number_input("Маркетинг, %", value=3.0)
-    with col3:
-        acquiring = st.number_input("Эквайринг + Бонусы, %", value=3.5)
-    with col4:
-        target_margin = st.number_input("Целевая маржа, %", value=20.0)
+st.divider()
 
-    st.divider()
+if 'commissions' in st.session_state:
+    st.header("2. Расчет партии")
+    col1, col2, col3 = st.columns(3)
+    with col1: target_m = st.number_input("Целевая маржа, %", value=20.0)
+    with col2: logistics_base = st.number_input("Фикс. логистика, руб", value=200.0)
+    with col3: marketing = st.number_input("Маркетинг + Ретро, %", value=8.0)
 
-    # Загрузка Excel
-    st.header("2. Загрузка товаров")
-    uploaded_file = st.file_uploader("Загрузите Excel/CSV (name, purchase_price, logistics_fix)", type=["xlsx", "csv"])
-
-    if uploaded_file:
-        df_input = pd.read_excel(uploaded_file) if uploaded_file.name.endswith("xlsx") else pd.read_csv(uploaded_file)
+    if st.button("💸 Рассчитать РРЦ для всех товаров"):
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM products")
+        all_products = cursor.fetchall()
         
-        if st.button("🚀 Рассчитать РРЦ"):
-            if not api_key:
-                st.error("Введите API Key в боковом меню!")
-            else:
-                progress_bar = st.progress(0)
-                results = []
-                cat_list = list(st.session_state['comm_dict'].keys())
-                
-                with st.spinner("ИИ классифицирует товары..."):
-                    for index, row in df_input.iterrows():
-                        # Классификация
-                        p_name = str(row['name'])
-                        ai_cat = get_best_category_ai(p_name, cat_list)
-                        comm_rate = st.session_state['comm_dict'].get(ai_cat, 15.0) # 15% по умолчанию
-                        
-                        # Расчет
-                        # Цена = (Закупка + Логистика) / (1 - %Затрат - %Маржи)
-                        k_var = (comm_rate + retro + marketing + acquiring) / 100
-                        margin_dec = target_margin / 100
-                        
-                        denominator = 1 - k_var - margin_dec
-                        
-                        if denominator > 0:
-                            rrc = (row['purchase_price'] + row['logistics_fix']) / denominator
-                            profit = rrc * (1 - k_var) - row['purchase_price'] - row['logistics_fix']
-                        else:
-                            rrc = 0
-                            profit = 0
-                            
-                        results.append({
-                            "Товар": p_name,
-                            "Категория (ИИ)": ai_cat,
-                            "Комиссия": f"{comm_rate}%",
-                            "Закупка": row['purchase_price'],
-                            "Логистика": row['logistics_fix'],
-                            "РРЦ": round(rrc, 0),
-                            "Прибыль": round(profit, 0)
-                        })
-                        progress_bar.progress((index + 1) / len(df_input))
+        results = []
+        cat_list = list(st.session_state['commissions'].keys())
+        
+        for p in all_products:
+            sku, name, l, h, w, weight = p
+            cat = get_ai_category(name, cat_list)
+            comm = st.session_state['commissions'].get(cat, 15.0)
+            
+            # Поиск себестоимости в загруженном файле (если он есть)
+            try:
+                # Ищем закупку по артикулу в df_raw
+                cost = float(df_raw[df_raw['артикул'].astype(str) == str(sku)]['себестоимость'].values[0])
+            except: cost = 0.0
 
-                res_df = pd.DataFrame(results)
-                st.success("Расчет готов!")
-                st.dataframe(res_df, use_container_width=True)
-                
-                # Скачивание
-                csv = res_df.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Скачать результат (CSV)", csv, "mvideo_calculation.csv", "text/csv")
-
-# Дополнительная информация
-with st.expander("Как работает формула?"):
-    st.write("""
-    **Формула:** `РРЦ = (Закупка + Логистика) / (1 - %Переменных_затрат - %Целевой_маржи)`
-    
-    Где переменные затраты включают:
-    - Комиссию категории (автоматически из PDF)
-    - Ретро-бонус
-    - Маркетинг
-    - Эквайринг и бонусы
-    """)
+            # Формула
+            k_var = (comm + marketing + 1.5) / 100 # +1.5 эквайринг
+            denom = 1 - k_var - (target_m / 100)
+            
+            if denom > 0 and cost > 0:
+                rrc = (cost + logistics_base) / denom
+            else: rrc = 0
+            
+            results.append({
+                "Артикул": sku, "Наименование": name, "Категория": cat,
+                "Комиссия": f"{comm}%", "Закупка": cost, "РРЦ": round(rrc, 0),
+                "Объем м3": round((l*h*w)/1000000, 4)
+            })
+        
+        res_df = pd.DataFrame(results)
+        st.dataframe(res_df)
+        st.download_button("📥 Скачать результат", res_df.to_csv(index=False).encode('utf-8'), "rrc_results.csv")
+else:
+    st.info("Сначала обновите комиссии в боковом меню.")
