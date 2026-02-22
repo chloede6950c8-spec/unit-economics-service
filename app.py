@@ -319,4 +319,87 @@ if "commissions" in st.session_state:
             comm = st.session_state["commissions"].get(cat, 15.0)
 
             # Себестоимость
-            cost =
+            cost = 0.0
+            if df_raw is not None and "артикул" in df_raw.columns:
+                try:
+                    cost = float(
+                        df_raw[
+                            df_raw["артикул"].astype(str) == str(sku)
+                        ]["себестоимость"].values[0]
+                    )
+                except Exception:
+                    cost = 0.0
+
+            # Полная логистика
+            logistics_total = mv_logistics + logistics_extra
+
+            # Суммарные проценты от цены
+            k_percent = comm + marketing + acquiring + early_payout
+
+            # Деноминатор формулы (таргет маржа задаётся до налогов)
+            denom = 1 - (k_percent / 100) - (target_m / 100)
+
+            if denom > 0 and cost > 0:
+                rrc = (cost + logistics_total + extra_costs) / denom
+            else:
+                rrc = 0
+
+            if rrc > 0:
+                # Переменные расходы от цены
+                percent_costs = rrc * (k_percent / 100)
+
+                # Прибыль до налога
+                profit_before_tax = (
+                    rrc - cost - logistics_total - extra_costs - percent_costs
+                )
+
+                # Налог
+                tax_amount = calc_tax(rrc, profit_before_tax, tax_regime)
+
+                # Прибыль после налога
+                profit_after_tax = profit_before_tax - tax_amount
+
+                margin_before_tax = (profit_before_tax / rrc) * 100
+                margin_after_tax = (profit_after_tax / rrc) * 100
+            else:
+                percent_costs = 0
+                profit_before_tax = 0
+                tax_amount = 0
+                profit_after_tax = 0
+                margin_before_tax = 0
+                margin_after_tax = 0
+
+            results.append({
+                "Артикул": sku,
+                "Наименование": name,
+                "Категория": cat,
+                "Комиссия, %": round(comm, 2),
+                "Маркетинг, %": round(marketing, 2),
+                "Эквайринг, %": round(acquiring, 2),
+                "Досрочный вывод, %": round(early_payout, 2),
+                "Тип": size_type,
+                "Объём, м³": round(volume_m3, 4),
+                "Логистика М.Видео, руб": round(mv_logistics, 2),
+                "Доп. логистика, руб": round(logistics_extra, 2),
+                "Доп. расходы, руб": round(extra_costs, 2),
+                "Закупка, руб": round(cost, 2),
+                "РРЦ, руб": round(rrc, 0),
+                "Прибыль до налога, руб": round(profit_before_tax, 0),
+                "Налог, руб": round(tax_amount, 0),
+                "Прибыль после налога, руб": round(profit_after_tax, 0),
+                "Маржа до налога, %": round(margin_before_tax, 1),
+                "Маржа после налога, %": round(margin_after_tax, 1),
+            })
+
+        res_df = pd.DataFrame(results)
+        st.subheader("Результаты расчёта")
+        st.dataframe(res_df, use_container_width=True)
+
+        st.download_button(
+            "📥 Скачать результат (CSV)",
+            res_df.to_csv(index=False).encode("utf-8"),
+            "rrc_results.csv",
+            mime="text/csv"
+        )
+else:
+    st.info("Сначала обновите комиссии из PDF М.Видео в боковом меню.")
