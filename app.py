@@ -181,6 +181,33 @@ def classify_size(length_cm, height_cm, width_cm):
     return size_type, volume_m3, mv_logistics
 
 
+def calc_tax(price, profit_before_tax, tax_regime):
+    """
+    Налог в зависимости от системы.
+    Ставки можно поправить под реальные условия.
+    """
+    if tax_regime == "ОСНО":
+        # Налог на прибыль, условно 25% от прибыли
+        return max(profit_before_tax, 0) * 0.25
+    elif tax_regime == "УСН (Доходы)":
+        # 6% с выручки
+        return price * 0.06
+    elif tax_regime == "УСН (Доходы-Расходы)":
+        # 15% с прибыли (если есть)
+        return max(profit_before_tax, 0) * 0.15
+    elif tax_regime == "АУСН":
+        # условно 8% с выручки
+        return price * 0.08
+    elif tax_regime == "УСН с НДС 5%":
+        # упрощённо: 6% налог + 5% НДС с выручки
+        return price * 0.11
+    elif tax_regime == "УСН с НДС 7%":
+        # упрощённо: 6% налог + 7% НДС
+        return price * 0.13
+    else:
+        return 0.0
+
+
 # --- UI ---
 
 st.title("🚀 Универсальный сервис юнит-экономики")
@@ -238,25 +265,40 @@ st.divider()
 if "commissions" in st.session_state:
     st.header("2. Расчёт партии")
 
+    # Параметры в процентах
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        target_m = st.number_input("Таргет маржа, %", value=20.0)
+        target_m = st.number_input("Таргет маржа, % (до налогов)", value=20.0)
     with col2:
         acquiring = st.number_input("Интернет-эквайринг, %", value=1.5)
     with col3:
-        marketing = st.number_input("Маркетинг + ретро, %", value=8.0)
+        marketing = st.number_input("Маркетинг + ретро, %", value=0.0)
     with col4:
-        extra_costs = st.number_input("Доп. расходы, руб/шт", value=0.0)
+        early_payout = st.number_input("Досрочный вывод денег, %", value=0.0)
 
+    # Параметры в рублях
     col5, col6 = st.columns(2)
     with col5:
+        extra_costs = st.number_input("Доп. расходы, руб/шт", value=0.0)
+    with col6:
         logistics_extra = st.number_input(
             "Доп. логистика продавца, руб/шт",
             value=0.0,
             help="Ваши логистические затраты сверх тарифов М.Видео"
         )
-    with col6:
-        qty = st.number_input("Количество в партии (для справки)", value=1, min_value=1)
+
+    # Система налогообложения
+    tax_regime = st.selectbox(
+        "Система налогообложения",
+        [
+            "ОСНО",
+            "УСН (Доходы)",
+            "УСН (Доходы-Расходы)",
+            "АУСН",
+            "УСН с НДС 5%",
+            "УСН с НДС 7%",
+        ]
+    )
 
     if st.button("💸 Рассчитать РРЦ для всех товаров"):
         cursor = conn.cursor()
@@ -277,67 +319,4 @@ if "commissions" in st.session_state:
             comm = st.session_state["commissions"].get(cat, 15.0)
 
             # Себестоимость
-            cost = 0.0
-            if df_raw is not None and "артикул" in df_raw.columns:
-                try:
-                    cost = float(
-                        df_raw[
-                            df_raw["артикул"].astype(str) == str(sku)
-                        ]["себестоимость"].values[0]
-                    )
-                except Exception:
-                    cost = 0.0
-
-            # Полная логистика
-            logistics_total = mv_logistics + logistics_extra
-
-            # Суммарные проценты от цены
-            k_percent = comm + marketing + acquiring
-
-            # Деноминатор формулы
-            denom = 1 - (k_percent / 100) - (target_m / 100)
-
-            if denom > 0 and cost > 0:
-                rrc = (cost + logistics_total + extra_costs) / denom
-            else:
-                rrc = 0
-
-            # Прибыль и факт-маржа
-            if rrc > 0:
-                percent_costs = rrc * (k_percent / 100)
-                profit = rrc - cost - logistics_total - extra_costs - percent_costs
-                margin_fact = (profit / rrc) * 100
-            else:
-                profit = 0
-                margin_fact = 0
-
-            results.append({
-                "Артикул": sku,
-                "Наименование": name,
-                "Категория": cat,
-                "Комиссия, %": round(comm, 2),
-                "Маркетинг, %": round(marketing, 2),
-                "Эквайринг, %": round(acquiring, 2),
-                "Тип": size_type,
-                "Объём, м³": round(volume_m3, 4),
-                "Логистика М.Видео, руб": round(mv_logistics, 2),
-                "Доп. логистика, руб": round(logistics_extra, 2),
-                "Доп. расходы, руб": round(extra_costs, 2),
-                "Закупка, руб": round(cost, 2),
-                "РРЦ, руб": round(rrc, 0),
-                "Прибыль, руб": round(profit, 0),
-                "Маржа факт, %": round(margin_fact, 1),
-            })
-
-        res_df = pd.DataFrame(results)
-        st.subheader("Результаты расчёта")
-        st.dataframe(res_df, use_container_width=True)
-
-        st.download_button(
-            "📥 Скачать результат (CSV)",
-            res_df.to_csv(index=False).encode("utf-8"),
-            "rrc_results.csv",
-            mime="text/csv"
-        )
-else:
-    st.info("Сначала обновите комиссии из PDF М.Видео в боковом меню.")
+            cost =
