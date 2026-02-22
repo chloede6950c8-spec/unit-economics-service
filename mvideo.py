@@ -1,229 +1,214 @@
-# mvideo.py
-# Модуль юнит-экономики для М.Видео
-# Подключается из app.py через mvideo.render(conn, get_ai_category, normalize_value, calc_tax)
-
+# mvideo.py — модуль М.Видео FBS
 import streamlit as st
 import pandas as pd
 import pdfplumber
 import requests
 from io import BytesIO
 
-# --- КОНСТАНТЫ ---
-COMMISSIONS_PDF_URL = "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/marketplace/applications/applications-1new.pdf"
-LOGISTICS_PDF_URL = "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/marketplace/applications/2026/applications-2-v2.pdf"
+COMMISSIONS_PDF_URL = (
+    "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/"
+    "marketplace/applications/applications-1new.pdf"
+)
 
-# Тарифы логистики М.Видео 2026
-LOGISTICS_TARIFFS = {
-    "S": 110.0,
-    "M": 190.0,
-    "L": 1290.0,
-}
+# Тарифы логистики FBS (applications-2-v2.pdf, 2026)
+LOGISTICS = {"S": 109, "M": 149, "L": 259, "XL": 259}
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
-def parse_pdf_commissions(url):
-    """Парсинг комиссий (проценты) из PDF договора М.Видео."""
-    data = {}
-    try:
-        resp = requests.get(url)
-        resp.raise_for_status()
-        with pdfplumber.open(BytesIO(resp.content)) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        clean = [
-                            str(c).replace("\n", " ").strip()
-                            for c in row if c
-                        ]
-                        for cell in clean:
-                            if "%" in cell:
-                                try:
-                                    cat = clean[0]
-                                    rate = float(
-                                        cell.replace("%", "")
-                                        .replace(",", ".")
-                                        .strip()
-                                    )
-                                    data[cat] = rate
-                                except Exception:
-                                    continue
-        return data
-    except Exception:
-        return None
-
-
-def classify_size(length_cm, height_cm, width_cm):
-    """
-    Определение типа S/M/L/XL по габаритам и объёму.
-    """
-    if not all([length_cm, height_cm, width_cm]):
-        return "S", 0.0, 0.0
-    sides = sorted([length_cm, height_cm, width_cm], reverse=True)
-    a, b, c = sides
-    volume_m3 = (length_cm * height_cm * width_cm) / 1_000_000
-    if a > 180 or (a > 120 and b > 120):
-        size_type = "XL"
-    elif volume_m3 > 0.2:
-        size_type = "L"
-    elif volume_m3 >= 0.01:
-        size_type = "M"
+def classify_size(length_cm: float, width_cm: float,
+                  height_cm: float, weight_kg: float) -> str:
+    vol = (length_cm * width_cm * height_cm) / 1000.0  # дм3
+    if weight_kg <= 1 and vol <= 27:
+        return "S"
+    elif weight_kg <= 5 and vol <= 54:
+        return "M"
+    elif weight_kg <= 25 and vol <= 160:
+        return "L"
     else:
-        size_type = "S"
-    tariff_key = "L" if size_type == "XL" else size_type
-    mv_logistics = LOGISTICS_TARIFFS.get(tariff_key, 0.0)
-    return size_type, volume_m3, mv_logistics
+        return "XL"
 
 
-# --- ТОЧКА ВХОДА ИЗ app.py ---
+def parse_pdf_commissions(url: str) -> dict:
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        result = {}
+        with pdfplumber.open(BytesIO(r.content)) as pdf:
+            for page in pdf.pages:
+                table = page.extract_table()
+                if not table:
+                    continue
+                for row in table:
+                    if not row or len(row) < 2:
+                        continue
+                    name = str(row[-2] or "").strip()
+                    val  = str(row[-1] or "").strip().replace(",", ".")
+                    try:
+                        pct = float(val)
+                        if name and 0 < pct < 100:
+                            result[name] = pct
+                    except ValueError:
+                        pass
+        return result
+    except Exception as e:
+        st.error(f"Ошибка загрузки PDF комиссий М.Видео: {e}")
+        return {}
 
-def render(conn, get_ai_category, normalize_value, calc_tax):
-    st.header("📺 М.Видео — Расчёт юнит-экономики")
 
+def render(conn, get_ai_category, normalize_value, calc_tax, params: dict):
+    st.header("М.Видео — Юнит-экономика (FBS)")
+
+    # Обновление комиссий — в боковой панели
     with st.sidebar:
-        if st.button("🔄 Обновить комиссии из PDF М.Видео", key="mv_refresh"):
-            res = parse_pdf_commissions(COMMISSIONS_PDF_URL)
-            if res:
-                st.session_state["mv_commissions"] = res
-                st.success(f"Загружено {len(res)} категорий комиссий")
+        st.divider()
+        st.subheader("Комиссии М.Видео")
+        if st.button("Обновить комиссии из PDF", key="mv_update_comm"):
+            with st.spinner("Загружаю PDF..."):
+                comms = parse_pdf_commissions(COMMISSIONS_PDF_URL)
+            if comms:
+                st.session_state["mvideo_commissions"] = comms
+                st.success(f"Загружено {len(comms)} категорий")
             else:
-                st.error("Не удалось загрузить комиссии из PDF")
+                st.warning("Не удалось загрузить. Проверьте PDF.")
+        if "mvideo_commissions" in st.session_state:
+            cnt = len(st.session_state["mvideo_commissions"])
+            st.caption(f"В кэше: {cnt} категорий")
+        else:
+            st.caption("Комиссии не загружены")
 
-        st.header("1. Загрузка базы данных товаров")
-        up_file = st.file_uploader(
-            "Загрузите Excel (артикул, наименование, себестоимость, длина, высота, ширина, вес)",
-            type=["xlsx"],
-            key="mv_upload"
+    commissions: dict = st.session_state.get("mvideo_commissions", {})
+
+    # Блок 1: Каталог товаров
+    with st.expander("Блок 1. Каталог товаров", expanded=True):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            dim_unit = st.selectbox("Единица размеров", ["см", "мм"], key="mv_dim")
+        with col_b:
+            wt_unit = st.selectbox("Единица веса", ["кг", "г"], key="mv_wt")
+
+        uploaded = st.file_uploader(
+            "Excel: SKU | Название | Длина | Ширина | Высота | Вес | Себестоимость",
+            type=["xlsx", "xls"], key="mv_upload"
         )
-
-    df_raw = None
-    if up_file:
-        df_raw = pd.read_excel(up_file)
-        df_raw.columns = [c.lower().strip() for c in df_raw.columns]
-        if st.sidebar.button("📥 Сохранить/обновить товары в базе", key="mv_save"):
-            cursor = conn.cursor()
-            for _, r in df_raw.iterrows():
-                l = normalize_value(r.get("длина", 0), "dim")
-                h = normalize_value(r.get("высота", 0), "dim")
-                w = normalize_value(r.get("ширина", 0), "dim")
-                wg = normalize_value(r.get("вес", 0), "weight")
-                cursor.execute(
-                    "INSERT OR REPLACE INTO products VALUES (?, ?, ?, ?, ?, ?)",
-                    (str(r.get("артикул")), str(r.get("наименование")), l, h, w, wg)
-                )
+        if uploaded and st.button("Сохранить в каталог", key="mv_save"):
+            df = pd.read_excel(uploaded)
+            df.columns = [str(c).strip() for c in df.columns]
+            saved = skipped = 0
+            cur = conn.cursor()
+            for _, row in df.iterrows():
+                try:
+                    sku  = str(row.get("SKU", row.get("Артикул", ""))).strip()
+                    name = str(row.get("Название", row.get("Наименование", ""))).strip()
+                    if not sku or not name:
+                        skipped += 1
+                        continue
+                    l  = normalize_value(row.get("Длина",  0), dim_unit)
+                    w  = normalize_value(row.get("Ширина", 0), dim_unit)
+                    h  = normalize_value(row.get("Высота", 0), dim_unit)
+                    wt = normalize_value(row.get("Вес",    0), wt_unit)
+                    cost = float(str(row.get("Себестоимость", row.get("Закупка", 0))).replace(",", ".") or 0)
+                    cur.execute("""
+                        INSERT INTO products
+                            (sku, name, length_cm, width_cm, height_cm, weight_kg, cost)
+                        VALUES (?,?,?,?,?,?,?)
+                        ON CONFLICT(sku) DO UPDATE SET
+                            name=excluded.name,
+                            length_cm=excluded.length_cm,
+                            width_cm=excluded.width_cm,
+                            height_cm=excluded.height_cm,
+                            weight_kg=excluded.weight_kg,
+                            cost=excluded.cost
+                    """, (sku, name, l, w, h, wt, cost))
+                    saved += 1
+                except Exception:
+                    skipped += 1
             conn.commit()
-            st.sidebar.success("База данных обновлена!")
+            st.success(f"Сохранено: {saved}, пропущено: {skipped}")
 
-    st.sidebar.divider()
+        all_products = conn.execute(
+            "SELECT sku, name, length_cm, width_cm, height_cm, weight_kg, cost FROM products"
+        ).fetchall()
+        if all_products:
+            df_show = pd.DataFrame(all_products,
+                columns=["SKU", "Название", "Длина, см", "Ширина, см", "Высота, см", "Вес, кг", "Себестоимость, руб"])
+            st.dataframe(df_show, use_container_width=True)
+        else:
+            st.info("Каталог пуст. Загрузите Excel.")
 
-    if "mv_commissions" not in st.session_state:
-        st.info("Сначала обновите комиссии из PDF М.Видео в боковом меню.")
+    all_products = conn.execute(
+        "SELECT sku, name, length_cm, width_cm, height_cm, weight_kg, cost FROM products"
+    ).fetchall()
+
+    if not all_products:
+        st.warning("Загрузите каталог товаров для расчёта.")
         return
 
-    st.header("2. Расчёт партии")
+    if not commissions:
+        st.warning("Нажмите 'Обновить комиссии из PDF' в боковом меню.")
+        return
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        target_m = st.number_input("Таргет маржа, % (до налогов)", value=20.0, key="mv_margin")
-    with col2:
-        acquiring = st.number_input("Интернет-эквайринг, %", value=1.5, key="mv_acq")
-    with col3:
-        marketing = st.number_input("Маркетинг + ретро, %", value=0.0, key="mv_mkt")
-    with col4:
-        early_payout = st.number_input("Досрочный вывод денег, %", value=0.0, key="mv_early")
+    # Блок 2: Расчёт
+    with st.expander("Блок 2. Расчёт юнит-экономики", expanded=True):
+        cat_list = list(commissions.keys())
 
-    col5, col6 = st.columns(2)
-    with col5:
-        extra_costs = st.number_input("Доп. расходы, руб/шт", value=0.0, key="mv_extra")
-    with col6:
-        logistics_extra = st.number_input(
-            "Доп. логистика продавца, руб/шт", value=0.0,
-            help="Ваши логистические затраты сверх тарифов М.Видео",
-            key="mv_logextra"
-        )
+        if st.button("Рассчитать РРЦ для всего каталога", key="mv_calc"):
+            target_m    = params["target_margin"]
+            acq         = params["acquiring"]
+            ep          = params["early_payout"]
+            mkt         = params["marketing"]
+            extra_c     = params["extra_costs"]
+            extra_l     = params["extra_logistics"]
+            tax_regime  = params["tax_regime"]
 
-    tax_regime = st.selectbox(
-        "Система налогообложения",
-        ["ОСНО", "УСН (Доходы)", "УСН (Доходы-Расходы)", "АУСН", "УСН с НДС 5%", "УСН с НДС 7%"],
-        key="mv_tax"
-    )
+            results = []
+            for p in all_products:
+                sku, name, l, w, h, wt, cost = p
+                cost = cost or 0.0
 
-    if st.button("💸 Рассчитать РРЦ для всех товаров", key="mv_calc"):
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM products")
-        all_products = cursor.fetchall()
+                size_type   = classify_size(l, w, h, wt)
+                logistics_mv = LOGISTICS.get(size_type, 259)
+                logistics_total = logistics_mv + extra_l
 
-        if not all_products:
-            st.warning("База товаров пуста. Загрузите Excel и сохраните товары.")
-            return
+                category = get_ai_category(name, cat_list, conn, "mvideo")
+                commission = commissions.get(category, 0.0)
 
-        results = []
-        cat_list = list(st.session_state["mv_commissions"].keys())
+                k_percent = commission + acq + ep + mkt
+                denom = 1 - (k_percent / 100) - (target_m / 100)
 
-        for p in all_products:
-            sku, name, l, h, w, weight = p
-            size_type, volume_m3, mv_logistics = classify_size(l, h, w)
-            cat = get_ai_category(name, cat_list)
-            comm = st.session_state["mv_commissions"].get(cat, 15.0)
+                if denom > 0 and cost > 0:
+                    rrc = (cost + logistics_total + extra_c) / denom
+                else:
+                    rrc = 0.0
 
-            cost = 0.0
-            if df_raw is not None and "артикул" in df_raw.columns:
-                try:
-                    cost = float(
-                        df_raw[df_raw["артикул"].astype(str) == str(sku)]["себестоимость"].values[0]
-                    )
-                except Exception:
-                    cost = 0.0
+                if rrc > 0:
+                    percent_costs = rrc * (k_percent / 100)
+                    profit_before = rrc - cost - logistics_total - extra_c - percent_costs
+                    margin_before = (profit_before / rrc * 100) if rrc > 0 else 0
+                    tax, profit_after, margin_after = calc_tax(rrc, cost + logistics_total + extra_c + percent_costs, tax_regime)
+                else:
+                    profit_before = margin_before = tax = profit_after = margin_after = 0.0
 
-            logistics_total = mv_logistics + logistics_extra
-            k_percent = comm + marketing + acquiring + early_payout
-            denom = 1 - (k_percent / 100) - (target_m / 100)
+                results.append({
+                    "SKU": sku,
+                    "Название": name,
+                    "Тип": size_type,
+                    "Логистика МВ, руб": logistics_mv,
+                    "Категория": category,
+                    "Комиссия, %": commission,
+                    "Себестоимость, руб": round(cost, 0),
+                    "РРЦ, руб": round(rrc, 0),
+                    "Прибыль до налога, руб": round(profit_before, 0),
+                    "Маржа до налога, %": round(margin_before, 1),
+                    "Налог, руб": round(tax, 0),
+                    "Прибыль после налога, руб": round(profit_after, 0),
+                    "Маржа после налога, %": round(margin_after, 1),
+                })
 
-            if denom > 0 and cost > 0:
-                rrc = (cost + logistics_total + extra_costs) / denom
-            else:
-                rrc = 0
-
-            if rrc > 0:
-                percent_costs = rrc * (k_percent / 100)
-                profit_before_tax = rrc - cost - logistics_total - extra_costs - percent_costs
-                tax_amount = calc_tax(rrc, profit_before_tax, tax_regime)
-                profit_after_tax = profit_before_tax - tax_amount
-                margin_before_tax = (profit_before_tax / rrc) * 100
-                margin_after_tax = (profit_after_tax / rrc) * 100
-            else:
-                percent_costs = profit_before_tax = tax_amount = 0
-                profit_after_tax = margin_before_tax = margin_after_tax = 0
-
-            results.append({
-                "Артикул": sku,
-                "Наименование": name,
-                "Категория": cat,
-                "Комиссия, %": round(comm, 2),
-                "Маркетинг, %": round(marketing, 2),
-                "Эквайринг, %": round(acquiring, 2),
-                "Досрочный вывод, %": round(early_payout, 2),
-                "Тип": size_type,
-                "Объём, м³": round(volume_m3, 4),
-                "Логистика М.Видео, руб": round(mv_logistics, 2),
-                "Доп. логистика, руб": round(logistics_extra, 2),
-                "Доп. расходы, руб": round(extra_costs, 2),
-                "Закупка, руб": round(cost, 2),
-                "РРЦ, руб": round(rrc, 0),
-                "Прибыль до налога, руб": round(profit_before_tax, 0),
-                "Налог, руб": round(tax_amount, 0),
-                "Прибыль после налога, руб": round(profit_after_tax, 0),
-                "Маржа до налога, %": round(margin_before_tax, 1),
-                "Маржа после налога, %": round(margin_after_tax, 1),
-            })
-
-        res_df = pd.DataFrame(results)
-        st.subheader("Результаты расчёта")
-        st.dataframe(res_df, use_container_width=True)
-        st.download_button(
-            "📥 Скачать результат (CSV)",
-            res_df.to_csv(index=False).encode("utf-8"),
-            "mvideo_rrc_results.csv",
-            mime="text/csv"
-        )
+            res_df = pd.DataFrame(results)
+            st.subheader("Результаты расчёта")
+            st.dataframe(res_df, use_container_width=True)
+            st.download_button(
+                "Скачать результат (CSV)",
+                res_df.to_csv(index=False).encode("utf-8"),
+                "mvideo_rrc_results.csv",
+                mime="text/csv"
+            )
