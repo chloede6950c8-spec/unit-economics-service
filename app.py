@@ -13,24 +13,23 @@ st.set_page_config(
     page_icon="📦"
 )
 
-# Константы
+# --- КОНСТАНТЫ ---
 COMMISSIONS_PDF_URL = "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/marketplace/applications/applications-1new.pdf"
 LOGISTICS_PDF_URL = "https://static.mvideo.ru/media/Promotions/Promo_Page/2025/September/marketplace/applications/2026/applications-2-v2.pdf"
 
-# Тарифы логистики М.Видео 2026 (ПРИМЕР — подставь значения из PDF 2-v2)
+# Тарифы логистики М.Видео 2026 (пример — подставь актуальные цифры из applications-2-v2.pdf)
 LOGISTICS_TARIFFS = {
-    "S": 110.0,    # руб за ед.
+    "S": 110.0,    # руб/ед
     "M": 190.0,
     "L": 1290.0,   # XL считаем как L
 }
 
 
-# --- ИНИЦИАЛИЗАЦИЯ БД (ПАМЯТЬ ТОВАРОВ) ---
+# --- ИНИЦИАЛИЗАЦИЯ БД ---
 def init_db():
     conn = sqlite3.connect("products_storage.db", check_same_thread=False)
     cursor = conn.cursor()
 
-    # Таблица товаров: храним паспортные данные
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
@@ -44,7 +43,6 @@ def init_db():
         """
     )
 
-    # Таблица кэша категорий ИИ
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS category_cache (
@@ -77,16 +75,16 @@ def normalize_value(val, unit_type):
     try:
         val = float(str(val).replace(",", "."))
         if unit_type == "dim" and val > 250:
-            return val / 10  # похоже на мм
+            return val / 10  # мм -> см
         if unit_type == "weight" and val > 150:
-            return val / 1000  # похоже на граммы
+            return val / 1000  # г -> кг
         return val
     except Exception:
         return 0.0
 
 
 def get_ai_category(product_name, categories):
-    """ИИ-классификация с проверкой кэша."""
+    """ИИ-классификация с кэшем в SQLite."""
     cursor = conn.cursor()
     cursor.execute(
         "SELECT category FROM category_cache WHERE name = ?",
@@ -122,7 +120,7 @@ def get_ai_category(product_name, categories):
 
 
 def parse_pdf_commissions(url):
-    """Парсинг комиссий из PDF (старый договор с процентами)."""
+    """Парсинг комиссий (проценты) из PDF договора М.Видео."""
     data = {}
     try:
         resp = requests.get(url)
@@ -156,7 +154,7 @@ def parse_pdf_commissions(url):
 def classify_size(length_cm, height_cm, width_cm):
     """
     Определение типа S/M/L/XL по габаритам и объёму.
-    Логику порогов возьми из приложения 2-v2 М.Видео и при необходимости поправь.
+    Логику порогов при необходимости скорректируй по applications-2-v2.pdf.
     """
     if not all([length_cm, height_cm, width_cm]):
         return "S", 0.0, 0.0
@@ -166,8 +164,7 @@ def classify_size(length_cm, height_cm, width_cm):
 
     volume_m3 = (length_cm * height_cm * width_cm) / 1_000_000
 
-    # Ниже примерная логика, завязанная на объём и длину сторон.
-    # Заменишь при необходимости на точные правила из PDF.
+    # Примерная логика: малый / средний / крупный / негабарит
     if a > 180 or (a > 120 and b > 120):
         size_type = "XL"
     elif volume_m3 > 0.2:
@@ -177,18 +174,18 @@ def classify_size(length_cm, height_cm, width_cm):
     else:
         size_type = "S"
 
-    # Для тарифа XL считаем как L (КГТ)
+    # Для тарифа XL считаем как L
     tariff_key = "L" if size_type == "XL" else size_type
     mv_logistics = LOGISTICS_TARIFFS.get(tariff_key, 0.0)
 
     return size_type, volume_m3, mv_logistics
 
 
-# --- ИНТЕРФЕЙС ---
+# --- UI ---
 
 st.title("🚀 Универсальный сервис юнит-экономики")
 
-# БОКОВОЕ МЕНЮ
+# Боковое меню
 with st.sidebar:
     st.header("🛒 Настройка ритейлера")
     retailer = st.selectbox(
@@ -201,6 +198,8 @@ with st.sidebar:
         if res:
             st.session_state["commissions"] = res
             st.success(f"Загружено {len(res)} категорий комиссий")
+        else:
+            st.error("Не удалось загрузить комиссии из PDF")
 
 st.header("1. Загрузка базы данных товаров")
 up_file = st.file_uploader(
@@ -239,20 +238,25 @@ st.divider()
 if "commissions" in st.session_state:
     st.header("2. Расчёт партии")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        target_m = st.number_input("Целевая маржа, %", value=20.0)
+        target_m = st.number_input("Таргет маржа, %", value=20.0)
     with col2:
+        acquiring = st.number_input("Интернет-эквайринг, %", value=1.5)
+    with col3:
+        marketing = st.number_input("Маркетинг + ретро, %", value=8.0)
+    with col4:
+        extra_costs = st.number_input("Доп. расходы, руб/шт", value=0.0)
+
+    col5, col6 = st.columns(2)
+    with col5:
         logistics_extra = st.number_input(
-            "Доп. логистика продавца, руб",
+            "Доп. логистика продавца, руб/шт",
             value=0.0,
             help="Ваши логистические затраты сверх тарифов М.Видео"
         )
-    with col3:
-        marketing = st.number_input(
-            "Маркетинг + ретро, %",
-            value=8.0
-        )
+    with col6:
+        qty = st.number_input("Количество в партии (для справки)", value=1, min_value=1)
 
     if st.button("💸 Рассчитать РРЦ для всех товаров"):
         cursor = conn.cursor()
@@ -272,7 +276,7 @@ if "commissions" in st.session_state:
             cat = get_ai_category(name, cat_list)
             comm = st.session_state["commissions"].get(cat, 15.0)
 
-            # Себестоимость из загруженного файла
+            # Себестоимость
             cost = 0.0
             if df_raw is not None and "артикул" in df_raw.columns:
                 try:
@@ -287,27 +291,42 @@ if "commissions" in st.session_state:
             # Полная логистика
             logistics_total = mv_logistics + logistics_extra
 
-            # Формула РРЦ
-            k_var = (comm + marketing + 1.5) / 100  # +1.5% эквайринг
-            denom = 1 - k_var - (target_m / 100)
+            # Суммарные проценты от цены
+            k_percent = comm + marketing + acquiring
+
+            # Деноминатор формулы
+            denom = 1 - (k_percent / 100) - (target_m / 100)
 
             if denom > 0 and cost > 0:
-                rrc = (cost + logistics_total) / denom
+                rrc = (cost + logistics_total + extra_costs) / denom
             else:
                 rrc = 0
+
+            # Прибыль и факт-маржа
+            if rrc > 0:
+                percent_costs = rrc * (k_percent / 100)
+                profit = rrc - cost - logistics_total - extra_costs - percent_costs
+                margin_fact = (profit / rrc) * 100
+            else:
+                profit = 0
+                margin_fact = 0
 
             results.append({
                 "Артикул": sku,
                 "Наименование": name,
                 "Категория": cat,
-                "Комиссия, %": comm,
+                "Комиссия, %": round(comm, 2),
+                "Маркетинг, %": round(marketing, 2),
+                "Эквайринг, %": round(acquiring, 2),
                 "Тип": size_type,
                 "Объём, м³": round(volume_m3, 4),
-                "Логистика М.Видео, руб": mv_logistics,
-                "Доп. логистика, руб": logistics_extra,
-                "Полная логистика, руб": logistics_total,
-                "Закупка, руб": cost,
+                "Логистика М.Видео, руб": round(mv_logistics, 2),
+                "Доп. логистика, руб": round(logistics_extra, 2),
+                "Доп. расходы, руб": round(extra_costs, 2),
+                "Закупка, руб": round(cost, 2),
                 "РРЦ, руб": round(rrc, 0),
+                "Прибыль, руб": round(profit, 0),
+                "Маржа факт, %": round(margin_fact, 1),
             })
 
         res_df = pd.DataFrame(results)
