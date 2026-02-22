@@ -145,3 +145,161 @@ def get_last_mile_tariff(zone_from: str, zone_to: str, volume_l: float) -> float
     key = (zone_from, zone_to)
     if key not in LAST_MILE_TARIFFS:
         # Попробуем об
+
+        reverse_key = (zone_to, zone_from)
+        if reverse_key in LAST_MILE_TARIFFS:
+            key = reverse_key
+        else:
+            return 0.0
+    tariffs = LAST_MILE_TARIFFS[key]
+    breaks = WEIGHT_BREAKS
+    for i, max_w in enumerate(breaks):
+        if volume_l <= max_w:
+            return float(tariffs[i])
+    last = tariffs[-1]
+    if isinstance(last, tuple):
+        base, per_l = last
+        return float(base) + (volume_l - breaks[-1]) * float(per_l)
+    return float(last)
+
+
+def get_delivery_to_sc(region: str, weight_kg: float) -> float:
+    tbl = DELIVERY_TO_SC.get(region, DELIVERY_TO_SC["Регион"])
+    breaks = sorted(tbl.keys())
+    for b in breaks:
+        if weight_kg <= b:
+            return float(tbl[b])
+    return float(tbl[breaks[-1]])
+
+
+# ---------------------------------------------------------------------------
+# 4. RENDER — точка входа из app.py
+# ---------------------------------------------------------------------------
+def render(conn, get_ai_category, normalize_value, calc_tax):
+    st.header("🏗️ Лемана Про (FBS) — Расчёт юнит-экономики")
+
+    with st.sidebar:
+        st.subheader("⚙️ Параметры логистики")
+        zone_from = st.selectbox("Зона склада продавца", ["9", "10", "Москва и МО", "СПБ и ЛО"], key="lp_zf")
+        zone_to = st.selectbox("Зона доставки покупателю", ["Москва и МО", "СПБ и ЛО", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], key="lp_zt")
+        delivery_region = st.selectbox("Регион склада (доставка до СЦ)", ["Москва и МО", "СПБ и ЛО", "Регион"], key="lp_dr")
+        include_return = st.checkbox("Учитывать возврат (50% тарифа)", value=False, key="lp_ret")
+
+    st.header("1. Загрузка базы данных товаров")
+    up_file = st.file_uploader(
+        "Загрузите Excel (артикул, наименование, себестоимость, вес)",
+        type=["xlsx"], key="lp_upload"
+    )
+    df_raw = None
+    if up_file:
+        df_raw = pd.read_excel(up_file)
+        df_raw.columns = [c.lower().strip() for c in df_raw.columns]
+        if st.button("📥 Сохранить/обновить товары в базе", key="lp_save"):
+            cursor = conn.cursor()
+            for _, r in df_raw.iterrows():
+                l = normalize_value(r.get("длина", 0), "dim")
+                h = normalize_value(r.get("высота", 0), "dim")
+                w = normalize_value(r.get("ширина", 0), "dim")
+                wg = normalize_value(r.get("вес", 0), "weight")
+                cursor.execute(
+                    "INSERT OR REPLACE INTO products VALUES (?, ?, ?, ?, ?, ?)",
+                    (str(r.get("артикул")), str(r.get("наименование")), l, h, w, wg)
+                )
+            conn.commit()
+            st.success("База данных обновлена!")
+
+    st.divider()
+    st.header("2. Параметры расчёта")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: target_m = st.number_input("Таргет маржа, %", value=20.0, key="lp_margin")
+    with col2: acquiring = st.number_input("Эквайринг, %", value=0.0, key="lp_acq")
+    with col3: marketing = st.number_input("Маркетинг, %", value=0.0, key="lp_mkt")
+    with col4: extra_costs = st.number_input("Доп. расходы, руб/шт", value=0.0, key="lp_extra")
+
+    tax_regime = st.selectbox("Система налогообложения", [
+        "ОСНО", "УСН (Доходы)", "УСН (Доходы-Расходы)", "АУСН", "УСН с НДС 5%", "УСН с НДС 7%"
+    ], key="lp_tax")
+
+    if st.button("💸 Рассчитать РРЦ для всех товаров", key="lp_calc"):
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM products")
+        all_products = cursor.fetchall()
+        if not all_products:
+            st.warning("База товаров пуста. Загрузите Excel и сохраните товары.")
+            return
+
+        cat_list = list(CATEGORY_COMMISSIONS.keys())
+        results = []
+
+        for p in all_products:
+            sku, name, length, height, width, weight = p
+            volume_l = (length * height * width) / 1000 if all([length, height, width]) else 1.0
+
+            cat = get_ai_category(name, cat_list)
+            comm = CATEGORY_COMMISSIONS.get(cat)
+            if comm is None:
+                comm = 18.0
+
+            cost = 0.0
+            if df_raw is not None and "артикул" in df_raw.columns:
+                try:
+                    cost = float(df_raw[df_raw["артикул"].astype(str) == str(sku)]["себестоимость"].values[0])
+                except Exception:
+                    cost = 0.0
+
+            lm_tariff = get_last_mile_tariff(zone_from, zone_to, volume_l)
+            sc_tariff = get_delivery_to_sc(delivery_region, weight)
+            return_cost = lm_tariff * RETURN_LAST_MILE_MULT if include_return else 0.0
+            logistics_total = lm_tariff + sc_tariff + return_cost
+
+            k_percent = comm + marketing + acquiring
+            denom = 1 - (k_percent / 100) - (target_m / 100)
+
+            if denom > 0 and cost > 0:
+                rrc = (cost + logistics_total + extra_costs) / denom
+            else:
+                rrc = 0
+
+            if rrc > 0:
+                percent_costs = rrc * (k_percent / 100)
+                profit_before_tax = rrc - cost - logistics_total - extra_costs - percent_costs
+                tax_amount = calc_tax(rrc, profit_before_tax, tax_regime)
+                profit_after_tax = profit_before_tax - tax_amount
+                margin_before = (profit_before_tax / rrc) * 100
+                margin_after = (profit_after_tax / rrc) * 100
+            else:
+                percent_costs = profit_before_tax = tax_amount = profit_after_tax = margin_before = margin_after = 0
+
+            results.append({
+                "Артикул": sku,
+                "Наименование": name,
+                "Категория": cat,
+                "Комиссия, %": round(comm, 2),
+                "Маркетинг, %": round(marketing, 2),
+                "Эквайринг, %": round(acquiring, 2),
+                "Объём, л": round(volume_l, 2),
+                "Вес, кг": round(weight, 2),
+                "Последняя миля, руб": round(lm_tariff, 2),
+                "Доставка до СЦ, руб": round(sc_tariff, 2),
+                "Возврат, руб": round(return_cost, 2),
+                "Логистика итого, руб": round(logistics_total, 2),
+                "Доп. расходы, руб": round(extra_costs, 2),
+                "Закупка, руб": round(cost, 2),
+                "РРЦ, руб": round(rrc, 0),
+                "Прибыль до налога, руб": round(profit_before_tax, 0),
+                "Налог, руб": round(tax_amount, 0),
+                "Прибыль после налога, руб": round(profit_after_tax, 0),
+                "Маржа до налога, %": round(margin_before, 1),
+                "Маржа после налога, %": round(margin_after, 1),
+            })
+
+        res_df = pd.DataFrame(results)
+        st.subheader("Результаты расчёта")
+        st.dataframe(res_df, use_container_width=True)
+        st.download_button(
+            "📥 Скачать результат (CSV)",
+            res_df.to_csv(index=False).encode("utf-8"),
+            "lemanpro_results.csv",
+            mime="text/csv"
+        )
