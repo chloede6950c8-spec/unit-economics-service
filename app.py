@@ -1,6 +1,11 @@
 import streamlit as st
 import sqlite3
+import sys
+import os
 from openai import OpenAI
+
+# Добавляем текущую директорию в путь для импорта локальных модулей
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 st.set_page_config(
     page_title="B2B Unit Economics Service",
@@ -67,8 +72,7 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     
     try:
         client = OpenAI(api_key=api_key)
-        cats_str = "
-".join(f"- {cat}" for cat in categories)
+        cats_str = "\n".join(f"- {cat}" for cat in categories)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -76,9 +80,7 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
                     f"Ты классификатор товаров для маркетплейса {client_key}. "
                     "Выбери ОДНУ категорию из списка. Ответь ТОЛЬКО её названием."
                 )},
-                {"role": "user", "content": f"Товар: {name}
-Категории:
-{cats_str}"}
+                {"role": "user", "content": f"Товар: {name}\nКатегории:\n{cats_str}"}
             ],
             max_tokens=60,
             temperature=0
@@ -131,7 +133,7 @@ with st.sidebar:
     st.title("📦 Unit Economics")
     client_choice = st.selectbox(
         "Клиент (маркетплейс)",
-        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (в разработке)", "Ситилинк (в разработке)"],
+        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (FBS)", "Ситилинк (в разработке)"],
         key="client_choice"
     )
     st.divider()
@@ -153,19 +155,21 @@ with st.sidebar:
         "Таргет маржа, %", value=20.0, step=0.5,
         min_value=0.0, max_value=99.0, key="target_margin"
     )
-    acquiring = st.number_input(
-        "Интернет-эквайринг, %", value=1.5, step=0.1,
-        min_value=0.0, key="acquiring"
-    )
     
-    # Скрываем поле "Досрочный вывод" по запросу (1)
+    # Скрываем поле "Эквайринг" и "Досрочный вывод" для Лемана Про по запросу (1)
     if client_choice != "Лемана Про (FBS)":
+        acquiring = st.number_input(
+            "Интернет-эквайринг, %", value=1.5, step=0.1,
+            min_value=0.0, key="acquiring"
+        )
         early_payout = st.number_input(
             "Досрочный вывод, %", value=0.0, step=0.1,
             min_value=0.0, key="early_payout"
         )
     else:
+        st.session_state["acquiring"] = 0.0
         st.session_state["early_payout"] = 0.0
+        acquiring = 0.0
         early_payout = 0.0
 
     marketing = st.number_input(
@@ -195,7 +199,7 @@ with st.sidebar:
         st.caption("🤖 AI-классификация: Активна (ключ из secrets/сессии)")
     
     st.divider()
-    st.caption("B2B Unit Economics Service v2.3")
+    st.caption("B2B Unit Economics Service v2.4")
 
 params = {
     "tax_regime": st.session_state.get("tax_regime", "УСН Доходы (6%)"),
@@ -213,5 +217,8 @@ if client_choice == "М.Видео (FBS)":
 elif client_choice == "Лемана Про (FBS)":
     import lemanpro_fbs
     lemanpro_fbs.render(conn, get_ai_category, normalize_value, calc_tax, params)
+elif client_choice == "DNS (FBS)":
+    import dns
+    dns.render(conn, get_ai_category, normalize_value, calc_tax, params)
 else:
     st.info(f"🔧 Модуль '{client_choice}' находится в разработке.")
