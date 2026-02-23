@@ -133,7 +133,7 @@ with st.sidebar:
     st.title("📦 Unit Economics")
     client_choice = st.selectbox(
         "Клиент (маркетплейс)",
-        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (FBS)", "Ситилинк (в разработке)"],
+        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (FBS)", "Ситилинк (FBS)"],
         key="client_choice"
     )
     st.divider()
@@ -199,7 +199,7 @@ with st.sidebar:
         st.caption("🤖 AI-классификация: Активна (ключ из secrets/сессии)")
     
     st.divider()
-    st.caption("B2B Unit Economics Service v2.4")
+    st.caption("B2B Unit Economics Service v2.5")
 
 params = {
     "tax_regime": st.session_state.get("tax_regime", "УСН Доходы (6%)"),
@@ -220,5 +220,8 @@ elif client_choice == "Лемана Про (FBS)":
 elif client_choice == "DNS (FBS)":
     import dns
     dns.render(conn, get_ai_category, normalize_value, calc_tax, params)
+elif client_choice == "Ситилинк (FBS)":
+    import citilink
+    citilink.render(conn, get_ai_category, normalize_value, calc_tax, params)
 else:
     st.info(f"🔧 Модуль '{client_choice}' находится в разработке.")
