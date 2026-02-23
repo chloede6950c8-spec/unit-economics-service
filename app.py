@@ -28,7 +28,7 @@ def init_db():
     cols = [r[1] for r in c.execute("PRAGMA table_info(products)")]
     if "cost" not in cols:
         c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
-        
+    
     c.execute("""
         CREATE TABLE IF NOT EXISTS ai_cache (
             name TEXT,
@@ -60,11 +60,11 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     ).fetchone()
     if row:
         return row[0]
-        
+    
     api_key = st.session_state.get("openai_key", "")
     if not api_key or not categories:
         return categories[0] if categories else "Неизвестно"
-        
+    
     try:
         client = OpenAI(api_key=api_key)
         cats_str = "
@@ -77,7 +77,6 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
                     "Выбери ОДНУ категорию из списка. Ответь ТОЛЬКО её названием."
                 )},
                 {"role": "user", "content": f"Товар: {name}
-
 Категории:
 {cats_str}"}
             ],
@@ -89,7 +88,7 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
             category = categories[0]
     except Exception:
         category = categories[0] if categories else "Неизвестно"
-        
+    
     c.execute(
         "INSERT OR REPLACE INTO ai_cache (name, client, category) VALUES (?,?,?)",
         (name, client_key, category)
@@ -158,10 +157,17 @@ with st.sidebar:
         "Интернет-эквайринг, %", value=1.5, step=0.1,
         min_value=0.0, key="acquiring"
     )
-    early_payout = st.number_input(
-        "Досрочный вывод, %", value=0.0, step=0.1,
-        min_value=0.0, key="early_payout"
-    )
+    
+    # Скрываем поле "Досрочный вывод" по запросу (1)
+    if client_choice != "Лемана Про (FBS)":
+        early_payout = st.number_input(
+            "Досрочный вывод, %", value=0.0, step=0.1,
+            min_value=0.0, key="early_payout"
+        )
+    else:
+        st.session_state["early_payout"] = 0.0
+        early_payout = 0.0
+
     marketing = st.number_input(
         "Маркетинг / ретро, %", value=0.0, step=0.5,
         min_value=0.0, key="marketing"
@@ -187,9 +193,9 @@ with st.sidebar:
     else:
         st.divider()
         st.caption("🤖 AI-классификация: Активна (ключ из secrets/сессии)")
-        
+    
     st.divider()
-    st.caption("B2B Unit Economics Service v2.2")
+    st.caption("B2B Unit Economics Service v2.3")
 
 params = {
     "tax_regime": st.session_state.get("tax_regime", "УСН Доходы (6%)"),
