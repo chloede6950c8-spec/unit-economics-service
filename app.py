@@ -10,36 +10,35 @@ st.set_page_config(
 
 DB_PATH = "products_storage.db"
 
-
 def init_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS products (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            sku         TEXT UNIQUE,
-            name        TEXT,
-            length_cm   REAL,
-            width_cm    REAL,
-            height_cm   REAL,
-            weight_kg   REAL,
-            cost        REAL DEFAULT 0
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT UNIQUE,
+            name TEXT,
+            length_cm REAL,
+            width_cm REAL,
+            height_cm REAL,
+            weight_kg REAL,
+            cost REAL DEFAULT 0
         )
     """)
     cols = [r[1] for r in c.execute("PRAGMA table_info(products)")]
     if "cost" not in cols:
         c.execute("ALTER TABLE products ADD COLUMN cost REAL DEFAULT 0")
+        
     c.execute("""
         CREATE TABLE IF NOT EXISTS ai_cache (
-            name     TEXT,
-            client   TEXT,
+            name TEXT,
+            client TEXT,
             category TEXT,
             PRIMARY KEY (name, client)
         )
     """)
     conn.commit()
     return conn
-
 
 def normalize_value(raw, unit):
     try:
@@ -53,7 +52,6 @@ def normalize_value(raw, unit):
         return v / 1000.0
     return v
 
-
 def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     c = conn.cursor()
     row = c.execute(
@@ -62,12 +60,15 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     ).fetchone()
     if row:
         return row[0]
+        
     api_key = st.session_state.get("openai_key", "")
     if not api_key or not categories:
         return categories[0] if categories else "Неизвестно"
+        
     try:
         client = OpenAI(api_key=api_key)
-        cats_str = "\n".join(f"- {cat}" for cat in categories)
+        cats_str = "
+".join(f"- {cat}" for cat in categories)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -75,7 +76,10 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
                     f"Ты классификатор товаров для маркетплейса {client_key}. "
                     "Выбери ОДНУ категорию из списка. Ответь ТОЛЬКО её названием."
                 )},
-                {"role": "user", "content": f"Товар: {name}\n\nКатегории:\n{cats_str}"}
+                {"role": "user", "content": f"Товар: {name}
+
+Категории:
+{cats_str}"}
             ],
             max_tokens=60,
             temperature=0
@@ -85,6 +89,7 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
             category = categories[0]
     except Exception:
         category = categories[0] if categories else "Неизвестно"
+        
     c.execute(
         "INSERT OR REPLACE INTO ai_cache (name, client, category) VALUES (?,?,?)",
         (name, client_key, category)
@@ -92,16 +97,15 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     conn.commit()
     return category
 
-
 def calc_tax(revenue: float, cost_total: float, regime: str):
     profit_before = revenue - cost_total
     rates = {
-        "ОСНО (25% от прибыли)":       ("profit",   0.25),
-        "УСН Доходы (6%)": 	            ("revenue",  0.06),
-        "УСН Доходы-Расходы (15%)": 	("profit",   0.15),
-        "АУСН (8% от дохода)":          ("revenue",  0.08),
-        "УСН с НДС 5%":                 ("revenue",  0.05),
-        "УСН с НДС 7%":                 ("revenue",  0.07),
+        "ОСНО (25% от прибыли)": ("profit", 0.25),
+        "УСН Доходы (6%)": ("revenue", 0.06),
+        "УСН Доходы-Расходы (15%)": ("profit", 0.15),
+        "АУСН (8% от дохода)": ("revenue", 0.08),
+        "УСН с НДС 5%": ("revenue", 0.05),
+        "УСН с НДС 7%": ("revenue", 0.07),
     }
     mode, rate = rates.get(regime, ("profit", 0.0))
     if mode == "revenue":
@@ -112,23 +116,28 @@ def calc_tax(revenue: float, cost_total: float, regime: str):
     margin_after = (profit_after / revenue * 100) if revenue > 0 else 0
     return round(tax, 2), round(profit_after, 2), round(margin_after, 1)
 
-
 # ── Инициализация БД ──────────────────────────────────────────────
 conn = init_db()
+
+# ── Обработка API ключа (Secrets / Session State) ─────────────────
+if "openai_key" not in st.session_state:
+    secret_key = st.secrets.get("OPENAI_API_KEY")
+    if secret_key:
+        st.session_state["openai_key"] = secret_key
+    else:
+        st.session_state["openai_key"] = ""
 
 # ── Боковая панель ────────────────────────────────────────────────
 with st.sidebar:
     st.title("📦 Unit Economics")
-
     client_choice = st.selectbox(
         "Клиент (маркетплейс)",
         ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (в разработке)", "Ситилинк (в разработке)"],
         key="client_choice"
     )
-
     st.divider()
+    
     st.subheader("⚙️ Параметры расчёта")
-
     tax_regime = st.selectbox(
         "Система налогообложения",
         [
@@ -165,32 +174,33 @@ with st.sidebar:
         "Доп. логистика, руб/шт", value=0.0, step=10.0,
         min_value=0.0, key="extra_logistics"
     )
-
+    
+    if not st.session_state.get("openai_key"):
+        st.divider()
+        st.subheader("🤖 AI-классификация")
+        openai_key_input = st.text_input(
+            "OpenAI API ключ", type="password", key="openai_key_input"
+        )
+        if openai_key_input:
+            st.session_state["openai_key"] = openai_key_input
+            st.rerun()
+    else:
+        st.divider()
+        st.caption("🤖 AI-классификация: Активна (ключ из secrets/сессии)")
+        
     st.divider()
-    st.subheader("🤖 AI-классификация")
-    openai_key = st.text_input(
-        "OpenAI API ключ", type="password", key="openai_key_input"
-    )
-    if openai_key:
-        st.session_state["openai_key"] = openai_key
-        st.caption("✅ Ключ сохранён")
+    st.caption("B2B Unit Economics Service v2.2")
 
-    st.divider()
-    st.caption("B2B Unit Economics Service v2.1")
-
-
-# Параметры передаются в модули
 params = {
-    "tax_regime":      st.session_state.get("tax_regime",      "УСН Доходы (6%)"),
-    "target_margin":   st.session_state.get("target_margin",   20.0),
-    "acquiring":       st.session_state.get("acquiring",       1.5),
-    "early_payout":    st.session_state.get("early_payout",    0.0),
-    "marketing":       st.session_state.get("marketing",       0.0),
-    "extra_costs":     st.session_state.get("extra_costs",     0.0),
+    "tax_regime": st.session_state.get("tax_regime", "УСН Доходы (6%)"),
+    "target_margin": st.session_state.get("target_margin", 20.0),
+    "acquiring": st.session_state.get("acquiring", 1.5),
+    "early_payout": st.session_state.get("early_payout", 0.0),
+    "marketing": st.session_state.get("marketing", 0.0),
+    "extra_costs": st.session_state.get("extra_costs", 0.0),
     "extra_logistics": st.session_state.get("extra_logistics", 0.0),
 }
 
-# ── Роутинг ───────────────────────────────────────────────────────
 if client_choice == "М.Видео (FBS)":
     import mvideo
     mvideo.render(conn, get_ai_category, normalize_value, calc_tax, params)
