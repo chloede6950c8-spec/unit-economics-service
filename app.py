@@ -72,7 +72,8 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
     
     try:
         client = OpenAI(api_key=api_key)
-        cats_str = "\n".join(f"- {cat}" for cat in categories)
+        cats_str = "
+".join(f"- {cat}" for cat in categories)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -80,7 +81,9 @@ def get_ai_category(name: str, categories: list, conn, client_key: str) -> str:
                     f"Ты классификатор товаров для маркетплейса {client_key}. "
                     "Выбери ОДНУ категорию из списка. Ответь ТОЛЬКО её названием."
                 )},
-                {"role": "user", "content": f"Товар: {name}\nКатегории:\n{cats_str}"}
+                {"role": "user", "content": f"Товар: {name}
+Категории:
+{cats_str}"}
             ],
             max_tokens=60,
             temperature=0
@@ -133,7 +136,7 @@ with st.sidebar:
     st.title("📦 Unit Economics")
     client_choice = st.selectbox(
         "Клиент (маркетплейс)",
-        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (FBS)", "Ситилинк (FBS)"],
+        ["М.Видео (FBS)", "Лемана Про (FBS)", "DNS (FBS)", "Ситилинк (FBS)", "Спортмастер (FBS)"],
         key="client_choice"
     )
     st.divider()
@@ -158,12 +161,15 @@ with st.sidebar:
     
     # Скрываем поле "Эквайринг" и "Досрочный вывод" для Лемана Про по запросу (1)
     if client_choice != "Лемана Про (FBS)":
+        acquiting_val = 1.5
+        early_payout_val = 0.0
+        
         acquiring = st.number_input(
-            "Интернет-эквайринг, %", value=1.5, step=0.1,
+            "Интернет-эквайринг, %", value=acquiting_val, step=0.1,
             min_value=0.0, key="acquiring"
         )
         early_payout = st.number_input(
-            "Досрочный вывод, %", value=0.0, step=0.1,
+            "Досрочный вывод, %", value=early_payout_val, step=0.1,
             min_value=0.0, key="early_payout"
         )
     else:
@@ -199,7 +205,7 @@ with st.sidebar:
         st.caption("🤖 AI-классификация: Активна (ключ из secrets/сессии)")
     
     st.divider()
-    st.caption("B2B Unit Economics Service v2.5")
+    st.caption("B2B Unit Economics Service v2.6")
 
 params = {
     "tax_regime": st.session_state.get("tax_regime", "УСН Доходы (6%)"),
@@ -223,5 +229,8 @@ elif client_choice == "DNS (FBS)":
 elif client_choice == "Ситилинк (FBS)":
     import citilink
     citilink.render(conn, get_ai_category, normalize_value, calc_tax, params)
+elif client_choice == "Спортмастер (FBS)":
+    import sportmaster_fbs
+    sportmaster_fbs.render(conn, get_ai_category, normalize_value, calc_tax, params)
 else:
     st.info(f"🔧 Модуль '{client_choice}' находится в разработке.")
