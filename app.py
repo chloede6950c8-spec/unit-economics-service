@@ -229,7 +229,7 @@ elif client_choice == "Ситилинк (FBS)":
 elif client_choice == "Спортмастер (FBS)":
     import sportmaster_fbs
     sportmaster_fbs.render(conn, get_ai_category, normalize_value, calc_tax, params)
-    elif client_choice == "PIM (каталог товаров)":
+elif client_choice == "PIM (каталог товаров)":
     import pim
     pim.render(conn, normalize_value, st.session_state.get("openai_key", ""))
 else:
