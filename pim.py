@@ -119,7 +119,7 @@ def render(conn: sqlite3.Connection, normalize_value, api_key: str):
             key="enrich_mode"
         )
     with col2:
-        use_web = st.checkbox("Использовать web-поиск + AI (требует OpenAI ключ)", value=bool(api_key), key="use_web")
+        use_web = False  # Web-поиск временно отключен (требуется модуль search_web)
 
     if not api_key and use_web:
         st.warning("⚠️ OpenAI ключ не настроен — будут использоваться только средние по категории")
