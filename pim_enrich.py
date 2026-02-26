@@ -151,3 +151,32 @@ def save_enrichment_to_db(db_path: str, product_id: int, data: Dict):
     ))
     conn.commit()
     conn.close()
+
+
+def init_pim_tables(conn: sqlite3.Connection):
+    """Создает таблицы для PIM-каталога, если их еще нет."""
+    cursor = conn.cursor()
+    
+    # Таблица товаров
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pim_catalog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT UNIQUE NOT NULL,
+            name TEXT,
+            length_cm REAL,
+            width_cm REAL,
+            height_cm REAL,
+            weight_kg REAL,
+            ean TEXT,
+            brand TEXT,
+            category TEXT,
+            description TEXT,
+            photo_url TEXT,
+            enrichment_status TEXT DEFAULT 'pending',
+            enrichment_source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
