@@ -288,8 +288,7 @@ def enrich_product(
                 product[field] = defaults.get(field)
         method = f"category_default ({defaults.get('source', category)})"
         product["enrich_source"] = method
-                                if product.get(field) is None or product.get(field) <= 0 or force:
-        return product, method
+    return product, method
 
         # Fallback на "Прочее" если ничего не нашли
         if not defaults:
