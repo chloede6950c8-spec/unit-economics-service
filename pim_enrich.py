@@ -14,7 +14,10 @@ import json
 import sqlite3
 from typing import Optional, Dict, Tuple
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except Exception:  # optional dependency for local runs
+    OpenAI = None
 
 
 # ── Средние габариты по категориям (базовый справочник) ────────────
@@ -78,6 +81,8 @@ def enrich_product_via_ai(product: Dict, openai_api_key: str) -> Optional[Dict]:
     2) Извлекает габариты из результатов
     3) Если не найдено → fallback на средние по категории
     """
+    if OpenAI is None:
+        raise RuntimeError("openai package not installed")
     client = OpenAI(api_key=openai_api_key)
     
     # 1) Формируем поисковый запрос
@@ -136,47 +141,102 @@ def enrich_product_via_ai(product: Dict, openai_api_key: str) -> Optional[Dict]:
     }
 
 
-def save_enrichment_to_db(db_path: str, product_id: int, data: Dict):
-    """Сохраняет обогащённые данные в БД (таблица pim_catalog)."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE pim_catalog
-        SET length_cm = ?, width_cm = ?, height_cm = ?, weight_kg = ?,
-            enrichment_status = 'success', enrichment_source = ?
-        WHERE id = ?
-    """, (
-        data["length_cm"], data["width_cm"], data["height_cm"], data["weight_kg"],
-        data["source"], product_id
-    ))
-    conn.commit()
-    conn.close()
-
-
 def init_pim_tables(conn: sqlite3.Connection):
-    """Создает таблицы для PIM-каталога, если их еще нет."""
+    """Подготавливает БД для PIM поверх единого каталога (таблица products)."""
     cursor = conn.cursor()
-    
-    # Таблица товаров
+
+    # Мягкая миграция: добавляем недостающие колонки в products
+    cols = [r[1] for r in cursor.execute("PRAGMA table_info(products)")]
+    alter = []
+    if "ean" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN ean TEXT")
+    if "brand" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN brand TEXT")
+    if "category" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN category TEXT")
+    if "description" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN description TEXT")
+    if "main_image_url" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN main_image_url TEXT")
+    if "enrich_status" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN enrich_status TEXT DEFAULT 'pending'")
+    if "enrich_source" not in cols:
+        alter.append("ALTER TABLE products ADD COLUMN enrich_source TEXT")
+
+    for stmt in alter:
+        try:
+            cursor.execute(stmt)
+        except Exception:
+            # best-effort: if column exists due to race, ignore
+            pass
+
+    # Лог обогащений
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pim_catalog (
+        CREATE TABLE IF NOT EXISTS pim_enrichment_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sku TEXT UNIQUE NOT NULL,
-            name TEXT,
-            length_cm REAL,
-            width_cm REAL,
-            height_cm REAL,
-            weight_kg REAL,
-            ean TEXT,
-            brand TEXT,
-            category TEXT,
-            description TEXT,
-            photo_url TEXT,
-            enrichment_status TEXT DEFAULT 'pending',
-            enrichment_source TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            product_id INTEGER,
+            method TEXT,
+            success INTEGER,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
+
     conn.commit()
+
+
+def _is_missing(v) -> bool:
+    return v is None or str(v).strip() == "" or v == 0
+
+
+def enrich_product(
+    product: Dict,
+    conn: sqlite3.Connection,
+    openai_api_key: str,
+    search_results=None,
+    force: bool = False,
+) -> Tuple[Dict, str]:
+    """API, которую ожидает pim.py: возвращает (updated_product, method)."""
+    # если уже заполнено и не force — ничего не делаем
+    if not force and not any(_is_missing(product.get(k)) for k in ("length_cm", "width_cm", "height_cm", "weight_kg")):
+        return product, "already_filled"
+
+    method = "failed"
+    updated = dict(product)
+
+    # Пытаемся AI (без веб-поиска, только по названию/sku) — если есть ключ
+    if openai_api_key:
+        try:
+            r = enrich_product_via_ai(product, openai_api_key)
+            if r:
+                updated.update({
+                    "length_cm": r.get("length_cm"),
+                    "width_cm": r.get("width_cm"),
+                    "height_cm": r.get("height_cm"),
+                    "weight_kg": r.get("weight_kg"),
+                })
+                method = r.get("source", "ai")
+        except Exception:
+            method = "failed"
+
+    # Если AI не сработал/ключа нет — fallback на категорию
+    if method == "failed":
+        guessed_category = guess_category_by_name(str(product.get("name") or ""))
+        defaults = CATEGORY_DEFAULTS_BUILTIN.get(guessed_category, CATEGORY_DEFAULTS_BUILTIN["Прочее"])
+        updated.update(defaults)
+        method = f"category_default ({guessed_category})"
+
+    updated["enrich_source"] = method
+    updated["enrich_status"] = "enriched" if method != "failed" else "failed"
+    return updated, method
+
+
+def log_enrichment(conn: sqlite3.Connection, product_id: int, method: str, success: bool):
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO pim_enrichment_log (product_id, method, success) VALUES (?,?,?)",
+            (int(product_id), str(method), 1 if success else 0),
+        )
+        conn.commit()
+    except Exception:
+        pass
