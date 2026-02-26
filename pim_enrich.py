@@ -235,8 +235,8 @@ def enrich_product(
         (обновлённый_product, метод_обогащения)
     """
     # Проверяем нужно ли обогащать
-        # Проверяем нужно ли обогащать (значения должны быть > 0, а не просто заполнены)
-        has_dims = all([
+    # Проверяем нужно ли обогащать (значения должны быть > 0, а не просто заполнены)
+    has_dims = all([
                     product.get("length_cm") is not None and product.get("length_cm") > 0,
                     product.get("width_cm") is not None and product.get("width_cm") > 0,
                     product.get("height_cm") is not None and product.get("height_cm") > 0,
