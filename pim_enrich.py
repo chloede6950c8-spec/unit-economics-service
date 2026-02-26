@@ -235,10 +235,13 @@ def enrich_product(
         (обновлённый_product, метод_обогащения)
     """
     # Проверяем нужно ли обогащать
-    has_dims = all([
-        product.get("length_cm"), product.get("width_cm"),
-        product.get("height_cm"), product.get("weight_kg"),
-    ])
+        # Проверяем нужно ли обогащать (значения должны быть > 0, а не просто заполнены)
+        has_dims = all([
+                    product.get("length_cm") is not None and product.get("length_cm") > 0,
+                    product.get("width_cm") is not None and product.get("width_cm") > 0,
+                    product.get("height_cm") is not None and product.get("height_cm") > 0,
+                    product.get("weight_kg") is not None and product.get("weight_kg") > 0,
+                ])
     if has_dims and not force:
         return product, "already_filled"
 
@@ -253,7 +256,7 @@ def enrich_product(
             for field in ("length_cm", "width_cm", "height_cm", "weight_kg"):
                 val = ai_result.get(field)
                 if val and val > 0:
-                    if not product.get(field) or force:
+                                        if product.get(field) is None or product.get(field) <= 0 or force:
                         product[field] = round(float(val), 2)
             method = f"web_ai ({ai_result.get('confidence', '')}, {ai_result.get('source', '')})"
 
@@ -281,11 +284,11 @@ def enrich_product(
 
     if defaults:
         for field in ("length_cm", "width_cm", "height_cm", "weight_kg"):
-            if not product.get(field) or force:
+                        if product.get(field) is None or product.get(field) <= 0 or force:
                 product[field] = defaults.get(field)
         method = f"category_default ({defaults.get('source', category)})"
         product["enrich_source"] = method
-        product["enrich_status"] = "default"
+                                if product.get(field) is None or product.get(field) <= 0 or force:
         return product, method
 
         # Fallback на "Прочее" если ничего не нашли
@@ -293,7 +296,7 @@ def enrich_product(
                     defaults = CATEGORY_DEFAULTS_BUILTIN.get("Прочее")
                     if defaults:
                                     for field in ("length_cm", "width_cm", "height_cm", "weight_kg"):
-                                                        if not product.get(field) or force:
+                                                                                if product.get(field) is None or product.get(field) <= 0 or force:
                                                                                 product[field] = defaults[field]
                                                                         method = "category_default (fallback_generic)"
                                                     product["enrich_source"] = method
