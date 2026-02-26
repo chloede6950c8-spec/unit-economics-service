@@ -41,6 +41,19 @@ CATEGORY_DEFAULTS_BUILTIN = {
     "Прочее":              {"length_cm": 30,  "width_cm": 20,  "height_cm": 15,  "weight_kg": 0.5},
 }
 
+# Маппинг ключевых слов для умного угадывания категорий
+CATEGORY_KEYWORDS = {
+        "Велосипеды": ["велосипед", "bike", "mtb", "шоссейн", "горный"],
+        "Самокаты": ["самокат", "scooter", "кикборд"],
+        "Фитнес": ["коврик", "тренажер", "гантел", "эспандер", "фитнес", "йога", "спортивн"],
+        "Лыжи": ["лыж", "ski", "беговые"],
+        "Сноуборды": ["сноуборд", "snowboard"],
+        "Электросамокаты": ["электросамокат", "электро", "e-scooter"],
+        "Скейтборды": ["скейт", "skateboard", "доска"],
+        "Ролики": ["ролик", "коньки", "inline"],
+    }
+
+
 
 def init_pim_tables(conn: sqlite3.Connection):
     """Создать таблицы PIM если их нет, расширить products новыми полями."""
@@ -256,15 +269,15 @@ def enrich_product(
     defaults = get_category_defaults(conn, category) if category else None
 
     if not defaults:
-        # Пробуем угадать категорию из названия
-        name_lower = (product.get("name", "") + " " + product.get("sku", "")).lower()
-        for cat in CATEGORY_DEFAULTS_BUILTIN:
-            if any(kw in name_lower for kw in cat.lower().split()):
-                defaults = {
-                    **CATEGORY_DEFAULTS_BUILTIN[cat],
-                    "source": f"builtin_guess ({cat})"
-                }
-                break
+# Умное угадывание категории через keywords
+            name_lower = (product.get("name", "") + " " + product.get("sku", "")).lower()
+                for cat, keywords in CATEGORY_KEYWORDS.items():
+                                if any(kw in name_lower for kw in keywords):
+                                                    defaults = {
+                                                                            **CATEGORY_DEFAULTS_BUILTIN[cat],
+                                                                            "source": f"keyword_match ({cat})"
+                                                                        }
+                                                    break
 
     if defaults:
         for field in ("length_cm", "width_cm", "height_cm", "weight_kg"):
@@ -275,6 +288,18 @@ def enrich_product(
         product["enrich_status"] = "default"
         return product, method
 
+        # Fallback на "Прочее" если ничего не нашли
+        if not defaults:
+                    defaults = CATEGORY_DEFAULTS_BUILTIN.get("Прочее")
+                    if defaults:
+                                    for field in ("length_cm", "width_cm", "height_cm", "weight_kg"):
+                                                        if not product.get(field) or force:
+                                                                                product[field] = defaults[field]
+                                                                        method = "category_default (fallback_generic)"
+                                                    product["enrich_source"] = method
+                                    product["enrich_status"] = "default"
+                                    return product, method
+                        
     product["enrich_status"] = "failed"
     return product, "failed"
 
