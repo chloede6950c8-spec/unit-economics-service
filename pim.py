@@ -106,6 +106,24 @@ def render(conn: sqlite3.Connection, normalize_value, api_key: str):
 
     st.dataframe(df_filtered, use_container_width=True, height=400)
 
+        # Кнопка экспорта каталога в Excel
+    if len(df_filtered) > 0:
+        # Создаем Excel файл в памяти
+        from io import BytesIO
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_filtered.to_excel(writer, index=False, sheet_name="Каталог")
+        output.seek(0)
+        
+        st.download_button(
+            label="📥 Скачать каталог в Excel",
+            data=output,
+            file_name=f"pim_catalog_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="export_catalog",
+            help="Экспортирует отфильтрованный каталог с обогащенными данными"
+        )
+
     st.divider()
 
     # ── Блок 3: Обогащение габаритов и веса ─────────────────────────
