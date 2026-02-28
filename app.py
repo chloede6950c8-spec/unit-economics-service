@@ -138,23 +138,25 @@ with st.sidebar:
     )
     st.divider()
     
-    st.subheader("⚙️ Параметры расчёта")
-    tax_regime = st.selectbox(
-        "Система налогообложения",
-        [
-            "ОСНО (25% от прибыли)",
-            "УСН Доходы (6%)",
-            "УСН Доходы-Расходы (15%)",
-            "АУСН (8% от дохода)",
-            "УСН с НДС 5%",
-            "УСН с НДС 7%",
-        ],
-        key="tax_regime"
-    )
-    target_margin = st.number_input(
-        "Таргет маржа, %", value=20.0, step=0.5,
-        min_value=0.0, max_value=99.0, key="target_margin"
-    )
+    if client_choice != "PIM (каталог товаров)":
+    
+        st.subheader("⚙️ Параметры расчёта")
+        tax_regime = st.selectbox(
+            "Система налогообложения",
+            [
+                "ОСНО (25% от прибыли)",
+                "УСН Доходы (6%)",
+                "УСН Доходы-Расходы (15%)",
+                "АУСН (8% от дохода)",
+                "УСН с НДС 5%",
+                "УСН с НДС 7%",
+            ],
+            key="tax_regime"
+        )
+        target_margin = st.number_input(
+            "Таргет маржа, %", value=20.0, step=0.5,
+            min_value=0.0, max_value=99.0, key="target_margin"
+        )
     
     # Скрываем поле "Эквайринг" и "Досрочный вывод" для Лемана Про по запросу (1)
     if client_choice != "Лемана Про (FBS)":
